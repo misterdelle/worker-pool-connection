@@ -16,21 +16,54 @@ import (
 	"time"
 )
 
-var dbUsername string = os.Getenv("DB_USERNAME")
-var dbName string = os.Getenv("DB_NAME")
+const (
+	dbMaxIdleConns = 4
+	dbMaxConns     = 100
+	totalWorker    = 100
+	csvFile        = "majestic_million.csv"
+)
 
-var dbConnString = dbUsername + "@tcp(localhost:8080)/" + dbName
+var (
+	dbUsername   = os.Getenv("DB_USERNAME")
+	dbName       = os.Getenv("DB_NAME")
+	dbConnString = fmt.Sprintf("%s@tcp(localhost:8080)/%s", dbUsername, dbName)
+	dataHeaders  []string
+)
 
-const dbMaxIdleConns = 4
-const dbMaxConns = 100
-const totalWorker = 100
+func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
-const csvFile = "majestic_million.csv"
+	start := time.Now()
 
-var dataHeaders = make([]string, 0)
+	db, err := OpenDBConnection()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer db.Close()
+
+	csvReader, csvFile, err := OpenCSVFile()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer csvFile.Close()
+
+	jobs := make(chan []interface{}, 0)
+	var wg sync.WaitGroup
+
+	go DispatchWorkers(db, jobs, &wg)
+	ProcessCSVFileWithWorker(csvReader, jobs, &wg)
+
+	wg.Wait()
+
+	duration := time.Since(start)
+	log.Printf("Done in %d seconds", int(math.Ceil(duration.Seconds())))
+}
 
 func OpenDBConnection() (*sql.DB, error) {
-	log.Println("open db connection")
+	log.Println("Open DB connection")
 
 	db, err := sql.Open("mysql", dbConnString)
 	if err != nil {
@@ -44,7 +77,7 @@ func OpenDBConnection() (*sql.DB, error) {
 }
 
 func OpenCSVFile() (*csv.Reader, *os.File, error) {
-	log.Println("open csv file")
+	log.Println("Open CSV file")
 
 	file, err := os.Open(csvFile)
 	if err != nil {
@@ -85,9 +118,9 @@ func ProcessCSVFileWithWorker(reader *csv.Reader, jobs chan<- []interface{}, wg 
 			continue
 		}
 
-		rowOrdered := make([]interface{}, 0)
-		for _, each := range row {
-			rowOrdered = append(rowOrdered, each)
+		rowOrdered := make([]interface{}, len(row))
+		for i, v := range row {
+			rowOrdered[i] = v
 		}
 
 		wg.Add(1)
@@ -98,75 +131,28 @@ func ProcessCSVFileWithWorker(reader *csv.Reader, jobs chan<- []interface{}, wg 
 
 func DoTheJob(workerIndex, counter int, db *sql.DB, values []interface{}) {
 	for {
-		var outerError error
-		func(outerError *error) {
-			defer func() {
-				if err := recover(); err != nil {
-					*outerError = fmt.Errorf("%v", err)
-				}
-			}()
+		conn, err := db.Conn(context.Background())
+		query := fmt.Sprintf("INSERT INTO domain (%s) VALUES (%s)",
+			strings.Join(dataHeaders, ","),
+			strings.Join(generateQuestionsMark(len(dataHeaders)), ","),
+		)
 
-			conn, err := db.Conn(context.Background())
-			query := fmt.Sprintf("INSERT INTO domain (%s) VALUES (%s)",
-				strings.Join(dataHeaders, ","),
-				strings.Join(generateQuestionsMark(len(dataHeaders)), ","),
-			)
-
-			_, err = conn.ExecContext(context.Background(), query, values...)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
-
-			err = conn.Close()
-			if err != nil {
-				log.Fatal(err.Error())
-			}
-		}(&outerError)
-		if outerError == nil {
-			break
+		_, err = conn.ExecContext(context.Background(), query, values...)
+		if err != nil {
+			log.Fatal(err.Error())
 		}
-	}
 
-	if counter%100 == 0 {
-		log.Println("=> worker", workerIndex, "inserted", counter, "data")
+		err = conn.Close()
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+		if counter%100 == 0 {
+			log.Printf("=> Worker %d inserted %d data\n", workerIndex, counter)
+		}
 	}
 }
 
 func generateQuestionsMark(n int) []string {
-	s := make([]string, 0)
-	for i := 0; i < n; i++ {
-		s = append(s, "?")
-	}
-	return s
-}
-
-func main() {
-	err := godotenv.Load()
-	if err != nil {
-		return
-	}
-
-	start := time.Now()
-
-	db, err := OpenDBConnection()
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	csvReader, csvFile, err := OpenCSVFile()
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	defer csvFile.Close()
-
-	jobs := make(chan []interface{}, 0)
-	wg := new(sync.WaitGroup)
-
-	go DispatchWorkers(db, jobs, wg)
-	ProcessCSVFileWithWorker(csvReader, jobs, wg)
-
-	wg.Wait()
-
-	duration := time.Since(start)
-	fmt.Println("done in", int(math.Ceil(duration.Seconds())), "seconds")
+	return make([]string, n)
 }
