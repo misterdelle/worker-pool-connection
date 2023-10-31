@@ -35,7 +35,7 @@ Make sure to set up the required environment variables in a `.env` file in the r
 1. Clone this repository to your local machine:
 
    ```bash
-   git clone https://github.com/your-username/your-repo.git
+   git clone https://github.com/umjiiii/worker-pool-connection.git
    cd your-repo
 2. Create a .env file in the project root directory and add the required environment variables as mentioned in the Configuration section.
 3. Build and run the program:
